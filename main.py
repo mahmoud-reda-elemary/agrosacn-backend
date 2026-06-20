@@ -61,6 +61,10 @@ async def analyze_image(file: UploadFile = File(...)):
         full_label = labels[max_index]
         confidence_percent = round(max_confidence * 100, 1)
         
+        # إذا كانت نسبة التأكد ضعيفة جداً (أقل من 50%)، فهذا يعني غالباً أن الصورة ليست لنبات
+        if confidence_percent < 50.0:
+            raise HTTPException(status_code=400, detail="الصورة غير واضحة أو لا تحتوي على ورقة نبات. يرجى التقاط صورة أوضح.")
+        
         plant_name = "Unknown"
         disease_name = full_label
         is_healthy = False
