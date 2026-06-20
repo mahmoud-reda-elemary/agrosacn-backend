@@ -37,21 +37,28 @@ async def analyze_image(file: UploadFile = File(...)):
         contents = await file.read()
         image = Image.open(io.BytesIO(contents)).convert('RGB')
         
-        # 1. Preprocess Image (Match Dart code: 150x150)
-        image = image.resize((150, 150))
-        
-        # Convert to numpy array and normalize to [0.0, 1.0]
-        input_data = np.array(image, dtype=np.float32) / 255.0
-        
-        # Add batch dimension: shape becomes [1, 150, 150, 3]
+        # 1. Preprocess Image
+        image_150 = image.resize((150, 150))
+        input_data = np.array(image_150, dtype=np.float32) / 255.0
         input_data = np.expand_dims(input_data, axis=0)
         
-        # 2. Run inference
+        # 2. Gatekeeper Check (Color Heuristic)
+        # Convert a smaller version to HSV to check for plant colors (Green/Yellow/Brown)
+        hsv_image = image.resize((100, 100)).convert('HSV')
+        np_hsv = np.array(hsv_image)
+        h = np_hsv[:,:,0]
+        s = np_hsv[:,:,1]
+        v = np_hsv[:,:,2]
+        
+        is_green = (h >= 30) & (h <= 110) & (s >= 30) & (v >= 30)
+        is_yellow_brown = (h >= 10) & (h < 30) & (s >= 30) & (v >= 20)
+        plant_ratio = np.sum(is_green | is_yellow_brown) / 10000.0
+        
+        # 3. Run inference
         interpreter.set_tensor(input_details[0]['index'], input_data)
         interpreter.invoke()
         output_data = interpreter.get_tensor(output_details[0]['index'])[0]
         
-        # 3. Post-process
         max_index = np.argmax(output_data)
         max_confidence = float(output_data[max_index])
         
@@ -61,9 +68,14 @@ async def analyze_image(file: UploadFile = File(...)):
         full_label = labels[max_index]
         confidence_percent = round(max_confidence * 100, 1)
         
-        # إذا كانت نسبة التأكد ضعيفة جداً (أقل من 50%)، فهذا يعني غالباً أن الصورة ليست لنبات
-        if confidence_percent < 50.0:
-            raise HTTPException(status_code=400, detail="الصورة غير واضحة أو لا تحتوي على ورقة نبات. يرجى التقاط صورة أوضح.")
+        # إذا لم يكن بالصورة أي ألوان نباتية (أقل من 5%)، نطلب نسبة تأكد عالية جداً (90%) لكي نقبلها
+        if plant_ratio < 0.05:
+            if confidence_percent < 90.0:
+                raise HTTPException(status_code=400, detail="الصورة غير واضحة أو لا تبدو كأنها ورقة نبات. يرجى التقاط صورة أوضح.")
+        else:
+            # إذا كانت ألوانها ألوان نبات، نقبلها حتى لو نسبة التأكد متوسطة (لأن النبات المريض قد تقل نسبة التأكد فيه)
+            if confidence_percent < 40.0:
+                raise HTTPException(status_code=400, detail="نسبة دقة التعرف ضعيفة جداً، يرجى التقاط صورة أقرب للورقة.")
         
         plant_name = "Unknown"
         disease_name = full_label
